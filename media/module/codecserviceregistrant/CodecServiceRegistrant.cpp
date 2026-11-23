@@ -490,6 +490,10 @@ public:
 
     c2_status_t querySupportedValues_sm_aidl(
             std::vector<C2FieldSupportedValuesQuery> &fields) const {
+        if (!mAidlConfigurable) {
+            LOG(ERROR) << "querySupportedValues -- null AIDL configurable.";
+            return C2_CORRUPTED;
+        }
         std::vector<c2_aidl::FieldSupportedValuesQuery> aidlFields(fields.size());
         for (size_t i = 0; i < fields.size(); ++i) {
             if (!c2_aidl::utils::ToAidl(&aidlFields[i], fields[i])) {
@@ -514,9 +518,10 @@ public:
             }
         }
         status = static_cast<c2_status_t>(queryResult.status.status);
-        if (status != C2_OK) {
+        if (status != C2_OK && status != C2_BAD_INDEX) {
             LOG(DEBUG) << "querySupportedValues -- call failed: "
                        << status << ".";
+            return status;
         }
         if (queryResult.values.size() != fields.size()) {
             LOG(ERROR) << "querySupportedValues -- "
@@ -524,18 +529,24 @@ public:
                           "have different sizes.";
             return C2_CORRUPTED;
         }
+        auto updatedFields = fields;
         for (size_t i = 0; i < fields.size(); ++i) {
-            if (!c2_aidl::utils::FromAidl(&fields[i], aidlFields[i], queryResult.values[i])) {
+            if (!c2_aidl::utils::FromAidl(&updatedFields[i], aidlFields[i], queryResult.values[i])) {
                 LOG(ERROR) << "querySupportedValues -- "
                               "invalid returned value.";
                 return C2_CORRUPTED;
             }
         }
+        fields.swap(updatedFields);
         return status;
     }
 
     c2_status_t querySupportedValues_sm_hidl(
             std::vector<C2FieldSupportedValuesQuery> &fields) const {
+        if (!mHidlConfigurable) {
+            LOG(ERROR) << "querySupportedValues -- null HIDL configurable.";
+            return C2_CORRUPTED;
+        }
         hidl_vec<c2_hidl::FieldSupportedValuesQuery> inFields(fields.size());
         for (size_t i = 0; i < fields.size(); ++i) {
             if (!c2_hidl::utils::objcpy(&inFields[i], fields[i])) {
@@ -544,28 +555,29 @@ public:
             }
         }
 
-        c2_status_t status;
+        auto updatedFields = fields;
+        c2_status_t status = C2_CORRUPTED;
         Return<void> transResult = mHidlConfigurable->querySupportedValues(
                 inFields,
                 true,
-                [&status, &inFields, &fields](
+                [&status, &inFields, &updatedFields](
                         c2_hidl::Status s,
                         const hidl_vec<c2_hidl::FieldSupportedValuesQueryResult>& r) {
                     status = static_cast<c2_status_t>(s);
-                    if (status != C2_OK) {
+                    if (status != C2_OK && status != C2_BAD_INDEX) {
                         LOG(DEBUG) << "querySupportedValues -- call failed: "
                                    << status << ".";
                         return;
                     }
-                    if (r.size() != fields.size()) {
+                    if (r.size() != updatedFields.size()) {
                         LOG(ERROR) << "querySupportedValues -- "
                                       "input and output lists "
                                       "have different sizes.";
                         status = C2_CORRUPTED;
                         return;
                     }
-                    for (size_t i = 0; i < fields.size(); ++i) {
-                        if (!c2_hidl::utils::objcpy(&fields[i], inFields[i], r[i])) {
+                    for (size_t i = 0; i < updatedFields.size(); ++i) {
+                        if (!c2_hidl::utils::objcpy(&updatedFields[i], inFields[i], r[i])) {
                             LOG(ERROR) << "querySupportedValues -- "
                                           "invalid returned value.";
                             status = C2_CORRUPTED;
@@ -576,6 +588,9 @@ public:
         if (!transResult.isOk()) {
             LOG(ERROR) << "querySupportedValues -- transaction failed.";
             return C2_TRANSACTION_FAILED;
+        }
+        if (status == C2_OK || status == C2_BAD_INDEX) {
+            fields.swap(updatedFields);
         }
         return status;
     }

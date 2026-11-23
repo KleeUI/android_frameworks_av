@@ -323,6 +323,7 @@ struct Codec2ConfigurableClient::HidlImpl : public Codec2ConfigurableClient::Imp
 
     // base cannot be null.
     explicit HidlImpl(const sp<Base>& base);
+    HidlImpl(const sp<Base>& base, const C2String& name);
 
     const C2String& getName() const override {
         return mName;
@@ -351,6 +352,11 @@ private:
     sp<Base> mBase;
     const C2String mName;
 };
+
+Codec2ConfigurableClient::HidlImpl::HidlImpl(
+        const sp<Base>& base, const C2String& name)
+      : mBase{base}, mName{name} {
+}
 
 Codec2ConfigurableClient::HidlImpl::HidlImpl(const sp<Base>& base)
       : mBase{base},
@@ -1198,6 +1204,11 @@ c2_status_t Codec2ConfigurableClient::ApexImpl::querySupportedValues(
 }
 
 // Codec2ConfigurableClient
+
+Codec2ConfigurableClient::Codec2ConfigurableClient(
+        const sp<HidlBase>& hidlBase, const C2String& name)
+    : mImpl(new Codec2ConfigurableClient::HidlImpl(hidlBase, name)) {
+}
 
 Codec2ConfigurableClient::Codec2ConfigurableClient(const sp<HidlBase> &hidlBase)
     : mImpl(new Codec2ConfigurableClient::HidlImpl(hidlBase)) {
@@ -2479,17 +2490,19 @@ c2_status_t Codec2Client::createInterface(
         return C2_OK;
     }
 
-    c2_status_t status;
+    interface->reset();
+    c2_status_t status = C2_CORRUPTED;
+    sp<c2_hidl::IComponentInterface> hidlInterface;
     Return<void> transStatus = mHidlBase1_0->createInterface(
             name,
-            [&status, interface](
+            [&status, &hidlInterface](
                     c2_hidl::Status s,
                     const sp<c2_hidl::IComponentInterface>& i) {
                 status = static_cast<c2_status_t>(s);
                 if (status != C2_OK) {
                     return;
                 }
-                *interface = std::make_shared<Interface>(i);
+                hidlInterface = i;
             });
     if (!transStatus.isOk()) {
         LOG(ERROR) << "createInterface(" << name.c_str()
@@ -2506,7 +2519,39 @@ c2_status_t Codec2Client::createInterface(
         return status;
     }
 
-    return status;
+    if (!hidlInterface) {
+        LOG(ERROR) << "createInterface -- null HIDL interface.";
+        return C2_CORRUPTED;
+    }
+    // Fetch once, then pass the checked object directly to the constructor.
+    Return<sp<c2_hidl::IConfigurable>> configResult = hidlInterface->getConfigurable();
+    if (!configResult.isOk()) {
+        LOG(ERROR) << "createInterface -- getConfigurable transaction failed.";
+        return C2_TRANSACTION_FAILED;
+    }
+    sp<c2_hidl::IConfigurable> configurable = configResult;
+    if (!configurable) {
+        LOG(ERROR) << "createInterface -- null HIDL configurable.";
+        return C2_CORRUPTED;
+    }
+    C2String configurableName;
+    bool nameReceived = false;
+    Return<void> nameResult = configurable->getName(
+            [&configurableName, &nameReceived](const hidl_string& name) {
+                configurableName = name.c_str();
+                nameReceived = true;
+            });
+    if (!nameResult.isOk()) {
+        LOG(ERROR) << "createInterface -- getName transaction failed.";
+        return C2_TRANSACTION_FAILED;
+    }
+    if (!nameReceived) {
+        LOG(ERROR) << "createInterface -- getName callback missing.";
+        return C2_CORRUPTED;
+    }
+    // Pass both checked values to construction without another remote call.
+    interface->reset(new Interface(hidlInterface, configurable, configurableName));
+    return C2_OK;
 }
 
 c2_status_t Codec2Client::createInputSurface(
@@ -3106,6 +3151,14 @@ bool Codec2Client::IsAidlSelected() {
 }
 
 // Codec2Client::Interface
+Codec2Client::Interface::Interface(
+        const sp<HidlBase>& base,
+        const sp<c2_hidl::IConfigurable>& configurable,
+        const C2String& name)
+      : Configurable{configurable, name},
+        mHidlBase{base} {
+}
+
 Codec2Client::Interface::Interface(const sp<HidlBase>& base)
       : Configurable{
             [base]() -> sp<c2_hidl::IConfigurable> {

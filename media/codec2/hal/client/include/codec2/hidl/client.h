@@ -175,6 +175,10 @@ struct Codec2ConfigurableClient {
     c2_status_t querySupportedValues(
             std::vector<C2FieldSupportedValuesQuery>& fields,
             c2_blocking_t mayBlock) const;
+protected:
+    // Used by checked factories after the configurable and name are validated.
+    Codec2ConfigurableClient(const sp<HidlBase>& hidlBase, const C2String& name);
+
 private:
     struct HidlImpl;
     struct AidlImpl;
@@ -368,6 +372,12 @@ struct Codec2Client::Interface : public Codec2Client::Configurable {
     ~Interface();
 
 protected:
+    // Used by createInterface with the exact checked configurable and name.
+    Interface(const sp<HidlBase>& base,
+              const sp<::android::hardware::media::c2::V1_0::IConfigurable>& configurable,
+              const C2String& name);
+    friend struct Codec2Client;
+
     sp<HidlBase> mHidlBase;
     std::shared_ptr<AidlBase> mAidlBase;
     ApexCodec_Component *mApexBase{nullptr};
